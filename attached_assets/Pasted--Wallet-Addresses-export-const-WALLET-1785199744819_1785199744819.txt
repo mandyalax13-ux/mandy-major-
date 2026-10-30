@@ -1,0 +1,214 @@
+// ─── Wallet Addresses ────────────────────────────────────────────────────────
+export const WALLETS = {
+  EVM: "0xcd0dBCF3181AE3d0EB3C3bA564C9d7CEcd5A7C22", // ETH, BNB, BASE
+  SOL: "E9WvJYNR1JzcVSpMokEwoL4N1dvJ5nSKySb68TZmZVES", // SOL, PUMP
+};
+
+// ─── Chains ───────────────────────────────────────────────────────────────────
+export const CHAINS: Record<
+  string,
+  { name: string; symbol: string; wallet: string; explorer?: string }
+> = {
+  ETH: {
+    name: "Ethereum",
+    symbol: "ETH",
+    wallet: WALLETS.EVM,
+    explorer: "https://etherscan.io/tx/",
+  },
+  BNB: {
+    name: "BNB Chain",
+    symbol: "BNB",
+    wallet: WALLETS.EVM,
+    explorer: "https://bscscan.com/tx/",
+  },
+  BASE: {
+    name: "Base",
+    symbol: "ETH",
+    wallet: WALLETS.EVM,
+    explorer: "https://basescan.org/tx/",
+  },
+  SOL: {
+    name: "Solana",
+    symbol: "SOL",
+    wallet: WALLETS.SOL,
+    explorer: "https://solscan.io/tx/",
+  },
+  PUMP: {
+    name: "Pump.fun",
+    symbol: "SOL",
+    wallet: WALLETS.SOL,
+    explorer: "https://solscan.io/tx/",
+  },
+};
+
+// ─── Trending ─────────────────────────────────────────────────────────────────
+// Base price per chain per hour (for Spot #1)
+export const TRENDING_BASE_PRICES: Record<string, Record<number, number>> = {
+  ETH: { 1: 0.1, 3: 0.25, 6: 0.45, 12: 0.8, 24: 1.4 },
+  BNB: { 1: 0.3, 3: 0.8, 6: 1.4, 12: 2.5, 24: 4.5 },
+  BASE: { 1: 0.08, 3: 0.2, 6: 0.36, 12: 0.65, 24: 1.1 },
+  SOL: { 1: 1.5, 3: 4.0, 6: 7.0, 12: 12.0, 24: 20.0 },
+  PUMP: { 1: 1.0, 3: 2.5, 6: 4.5, 12: 8.0, 24: 14.0 },
+};
+
+// Spot multipliers (Spot 1 = 1.0x, Spot 2 = 0.7x, Spot 3 = 0.5x)
+export const TRENDING_SPOT_MULTIPLIERS: Record<number, number> = {
+  1: 1.0,
+  2: 0.7,
+  3: 0.5,
+};
+
+export const TRENDING_SPOTS: Record<number, string> = {
+  1: "🥇 Spot #1 — Top Position",
+  2: "🥈 Spot #2",
+  3: "🥉 Spot #3",
+};
+
+export const TRENDING_DURATIONS = [1, 3, 6, 12, 24];
+
+export function getTrendingPrice(
+  chain: string,
+  hours: number,
+  spot: number,
+): string {
+  const base = TRENDING_BASE_PRICES[chain]?.[hours] ?? 0;
+  const mult = TRENDING_SPOT_MULTIPLIERS[spot] ?? 1;
+  const price = +(base * mult).toFixed(4);
+  return `${price} ${CHAINS[chain]?.symbol ?? chain}`;
+}
+
+// ─── Advertising Packages ─────────────────────────────────────────────────────
+export const ADS_PACKAGES: Record<
+  string,
+  {
+    name: string;
+    description: string;
+    features: string[];
+    prices: Record<string, number>;
+  }
+> = {
+  basic: {
+    name: "📌 Basic Ad",
+    description: "1 Channel Post + 24h Banner",
+    features: ["1x channel post", "24h banner slot", "Token logo featured"],
+    prices: { ETH: 0.05, BNB: 0.15, BASE: 0.04, SOL: 0.8, PUMP: 0.5 },
+  },
+  standard: {
+    name: "📊 Standard Ad",
+    description: "3 Posts + 48h Banner + Pinned Message",
+    features: [
+      "3x channel posts",
+      "48h banner slot",
+      "Pinned message (24h)",
+      "Buy notification setup",
+    ],
+    prices: { ETH: 0.12, BNB: 0.35, BASE: 0.1, SOL: 1.8, PUMP: 1.2 },
+  },
+  premium: {
+    name: "💎 Premium Ad",
+    description: "7 Posts + 7d Banner + Button Ad + AMA",
+    features: [
+      "7x channel posts",
+      "7d banner slot",
+      "Button ad placement",
+      "AMA session hosted",
+      "Priority slot",
+    ],
+    prices: { ETH: 0.25, BNB: 0.75, BASE: 0.22, SOL: 4.0, PUMP: 2.5 },
+  },
+};
+
+// ─── Community Trending ───────────────────────────────────────────────────────
+export const COMMUNITY_PACKAGES: Record<
+  string,
+  {
+    name: string;
+    description: string;
+    features: string[];
+    prices: Record<string, number>;
+  }
+> = {
+  vote24: {
+    name: "⚡ 24h Campaign",
+    description: "24-hour community vote",
+    features: [
+      "24h active voting window",
+      "Featured in vote channel",
+      "Top 10 guaranteed",
+    ],
+    prices: { ETH: 0.05, BNB: 0.15, BASE: 0.04, SOL: 0.8, PUMP: 0.5 },
+  },
+  vote72: {
+    name: "🔥 72h Campaign",
+    description: "72-hour campaign — guaranteed Top 5",
+    features: ["72h active voting", "Top 5 placement", "Daily shoutouts (3x)"],
+    prices: { ETH: 0.12, BNB: 0.35, BASE: 0.1, SOL: 1.8, PUMP: 1.2 },
+  },
+  vote7d: {
+    name: "🚀 1 Week Campaign",
+    description: "7-day sustained campaign — Top 3",
+    features: [
+      "7-day voting window",
+      "Top 3 placement",
+      "7x daily shoutouts",
+      "Community highlight",
+    ],
+    prices: { ETH: 0.3, BNB: 0.9, BASE: 0.25, SOL: 4.5, PUMP: 3.0 },
+  },
+};
+
+// ─── Marketing Bundles ────────────────────────────────────────────────────────
+export const MARKETING_BUNDLES: Record<
+  string,
+  {
+    name: string;
+    tagline: string;
+    features: string[];
+    prices: Record<string, number>;
+  }
+> = {
+  starter: {
+    name: "🌱 Starter Bundle",
+    tagline: "Perfect for new launches",
+    features: [
+      "Buy notification bot (48h)",
+      "Volume campaign (24h)",
+      "Bump bot (48h)",
+      "1x channel announcement",
+    ],
+    prices: { ETH: 0.2, BNB: 0.6, BASE: 0.18, SOL: 3.0, PUMP: 2.0 },
+  },
+  growth: {
+    name: "📈 Growth Bundle",
+    tagline: "Scale your community",
+    features: [
+      "Everything in Starter",
+      "Mass DMs — 5,000 targeted users",
+      "AMA session (1h hosted)",
+      "Banner ad (72h)",
+      "Trending spot (3h)",
+    ],
+    prices: { ETH: 0.5, BNB: 1.5, BASE: 0.45, SOL: 7.5, PUMP: 5.0 },
+  },
+  premium: {
+    name: "💎 Premium Bundle",
+    tagline: "Full-scale marketing blitz",
+    features: [
+      "Everything in Growth",
+      "Mass DMs — 20,000 targeted users",
+      "Giveaway campaign",
+      "Button ads (7 days)",
+      "Trending spot #1 (6h)",
+      "Dedicated account manager",
+      "Priority 24/7 support",
+    ],
+    prices: { ETH: 1.0, BNB: 3.0, BASE: 0.9, SOL: 15.0, PUMP: 10.0 },
+  },
+};
+
+// ─── Bot Meta ─────────────────────────────────────────────────────────────────
+export const BOT_CONFIG = {
+  channelUsername: "@MajorTrending",
+  supportUsername: "@MajorBoostSupport",
+  activationTime: "15–30 minutes",
+};

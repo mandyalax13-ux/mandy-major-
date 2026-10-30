@@ -1,0 +1,765 @@
+import fs from "fs";
+import path from "path";
+import type { Telegraf } from "telegraf";
+import { Markup, Input } from "telegraf";
+import type { BotContext } from "./index.js";
+import { logger } from "../lib/logger.js";
+import {
+  CHAINS,
+  ADS_PACKAGES,
+  COMMUNITY_PACKAGES,
+  MARKETING_BUNDLES,
+  TRENDING_SPOTS,
+  getTrendingPrice,
+  BOT_CONFIG,
+} from "./config.js";
+import {
+  mainMenuKeyboard,
+  chainKeyboard,
+  trendingSpotKeyboard,
+  trendingDurationKeyboard,
+  adsPackageKeyboard,
+  communityPackageKeyboard,
+  marketingBundleKeyboard,
+  paymentKeyboard,
+  afterPaymentKeyboard,
+  backToMenuKeyboard,
+} from "./keyboards.js";
+import {
+  createOrder,
+  updateOrder,
+  getUserOrders,
+  getAllOrders,
+  getOrder,
+} from "./store.js";
+import type { PromoType } from "./session.js";
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+function resetSession(ctx: BotContext) {
+  ctx.session.step = "idle";
+  ctx.session.promoType = undefined;
+  ctx.session.chain = undefined;
+  ctx.session.contractAddress = undefined;
+  ctx.session.packageId = undefined;
+  ctx.session.trendingSpot = undefined;
+  ctx.session.trendingDuration = undefined;
+  ctx.session.orderId = undefined;
+}
+
+function isValidContractAddress(address: string, chain: string): boolean {
+  const trimmed = address.trim();
+  if (chain === "SOL" || chain === "PUMP") {
+    // Solana base58 address: 32–44 chars
+    return /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(trimmed);
+  }
+  // EVM: 0x + 40 hex chars
+  return /^0x[0-9a-fA-F]{40}$/.test(trimmed);
+}
+
+function formatStatus(status: string): string {
+  const map: Record<string, string> = {
+    awaiting_payment: "⏳ Awaiting Payment",
+    payment_submitted: "🔍 Verifying Payment",
+    verified: "✅ Verified",
+    active: "🚀 Active",
+    completed: "✅ Completed",
+    cancelled: "❌ Cancelled",
+  };
+  return map[status] ?? status;
+}
+
+// ─── Safe Edit Helper ─────────────────────────────────────────────────────────
+// ctx.editMessageText fails on photo messages; fall back to a new reply.
+async function safeEdit(
+  ctx: BotContext,
+  text: string,
+  extra?: Parameters<(typeof ctx)["editMessageText"]>[1],
+): Promise<void> {
+  try {
+    await ctx.editMessageText(text, extra);
+  } catch {
+    await ctx.reply(text, extra as Parameters<(typeof ctx)["reply"]>[1]);
+  }
+}
+
+// ─── Welcome & Main Menu ──────────────────────────────────────────────────────
+export async function sendWelcome(ctx: BotContext) {
+  resetSession(ctx);
+  const name = ctx.from?.first_name ?? "there";
+  const text = `🚀 *Boost your token!* @MajorTrending\n\n🪙*New Trending Packages:*\n_Includes Button AD and Mass DM to reach all BuyBot users._\n\n📈 *Free Bumps, Market Maker or Holders*\n_Included with every Trending Ticket (SOL Chain only)._\n\n⚠️ *Disclaimer:* @MajorBotsHub`;
+
+  const imagePath = path.join(process.cwd(), "assets", "welcome.jpg");
+  if (fs.existsSync(imagePath)) {
+    await ctx.replyWithPhoto(Input.fromLocalFile(imagePath), {
+      caption: text,
+      parse_mode: "Markdown",
+      ...mainMenuKeyboard(),
+    });
+  } else {
+    await ctx.reply(text, { parse_mode: "Markdown", ...mainMenuKeyboard() });
+  }
+}
+
+// ─── Promo Type Selection ──────────────────────────────────────────────────────
+async function startPromoFlow(ctx: BotContext, type: PromoType) {
+  resetSession(ctx);
+  ctx.session.promoType = type;
+
+  const titles: Record<PromoType, string> = {
+    trending: "🚀 *Trending Promotion*",
+    ads: "📢 *Advertising*",
+    community: "🏆 *Community Trending*",
+    marketing: "📦 *Marketing Bundles*",
+  };
+
+  const descriptions: Record<PromoType, string> = {
+    trending: "Book a trending spot in our channel and get seen by thousands.",
+    ads: "Promote your token with channel posts, banners, and button ads.",
+    community: "Run a community voting campaign and rise up the leaderboard.",
+    marketing: "Full-scale marketing blitzes with DMs, bumps, AMAs & more.",
+  };
+
+  const text = `${titles[type]}\n\n${descriptions[type]}\n\n*Step 1 of 4* — Select your blockchain:`;
+
+  await safeEdit(ctx, text, {
+    parse_mode: "Markdown",
+    ...chainKeyboard(),
+  });
+
+  const stepMap: Record<PromoType, string> = {
+    trending: "trending_chain",
+    ads: "ads_chain",
+    community: "community_chain",
+    marketing: "marketing_chain",
+  };
+  ctx.session.step = stepMap[type] as typeof ctx.session.step;
+}
+
+// ─── Chain Selected ───────────────────────────────────────────────────────────
+async function handleChainSelected(ctx: BotContext, chain: string) {
+  ctx.session.chain = chain;
+  const chainInfo = CHAINS[chain];
+
+  const stepContractMap: Record<string, typeof ctx.session.step> = {
+    trending_chain: "trending_contract",
+    ads_chain: "ads_contract",
+    community_chain: "community_contract",
+    marketing_chain: "marketing_contract",
+  };
+  ctx.session.step = stepContractMap[ctx.session.step] ?? "idle";
+
+  const text =
+    `✅ *Chain: ${chainInfo.name}*\n\n` +
+    `*Step 2 of 4* — Enter your token contract address:\n\n` +
+    `_(Paste the contract address below)_`;
+
+  await safeEdit(ctx, text, {
+    parse_mode: "Markdown",
+    ...Markup.inlineKeyboard([[Markup.button.callback("« Cancel", "menu")]]),
+  });
+}
+
+// ─── Contract Address Input (text message) ────────────────────────────────────
+async function handleContractInput(ctx: BotContext, text: string) {
+  const address = text.trim();
+  const chain = ctx.session.chain!;
+
+  if (!isValidContractAddress(address, chain)) {
+    await ctx.reply(
+      `⚠️ That doesn't look like a valid *${CHAINS[chain]?.name}* contract address.\n\nPlease paste the correct address:`,
+      {
+        parse_mode: "Markdown",
+        ...Markup.inlineKeyboard([
+          [Markup.button.callback("« Cancel", "menu")],
+        ]),
+      },
+    );
+    return;
+  }
+
+  ctx.session.contractAddress = address;
+
+  // Advance to package/spot selection
+  const type = ctx.session.promoType!;
+
+  if (type === "trending") {
+    ctx.session.step = "trending_spot";
+    await ctx.reply(
+      `✅ *Contract set!*\n\n*Step 3 of 4* — Choose your trending spot:`,
+      { parse_mode: "Markdown", ...trendingSpotKeyboard(chain) },
+    );
+  } else if (type === "ads") {
+    ctx.session.step = "ads_package";
+    await ctx.reply(
+      `✅ *Contract set!*\n\n*Step 3 of 4* — Choose an advertising package:`,
+      { parse_mode: "Markdown", ...adsPackageKeyboard(chain) },
+    );
+  } else if (type === "community") {
+    ctx.session.step = "community_package";
+    await ctx.reply(
+      `✅ *Contract set!*\n\n*Step 3 of 4* — Choose a campaign duration:`,
+      { parse_mode: "Markdown", ...communityPackageKeyboard(chain) },
+    );
+  } else if (type === "marketing") {
+    ctx.session.step = "marketing_bundle";
+    await ctx.reply(
+      `✅ *Contract set!*\n\n*Step 3 of 4* — Choose a marketing bundle:`,
+      { parse_mode: "Markdown", ...marketingBundleKeyboard(chain) },
+    );
+  }
+}
+
+// ─── Trending: Spot Selected ──────────────────────────────────────────────────
+async function handleSpotSelected(ctx: BotContext, spot: number) {
+  ctx.session.trendingSpot = spot;
+  ctx.session.step = "trending_duration";
+  const chain = ctx.session.chain!;
+  const spotName = TRENDING_SPOTS[spot];
+
+  const text = `✅ *${spotName}*\n\n*Step 4 of 4* — Select duration:`;
+
+  await safeEdit(ctx, text, {
+    parse_mode: "Markdown",
+    ...trendingDurationKeyboard(chain, spot),
+  });
+}
+
+// ─── Show Payment Info & Create Order ────────────────────────────────────────
+async function showPayment(
+  ctx: BotContext,
+  packageId: string,
+  packageName: string,
+  amount: string,
+) {
+  const chain = ctx.session.chain!;
+  const contract = ctx.session.contractAddress!;
+  const wallet = CHAINS[chain].wallet;
+  const chainName = CHAINS[chain].name;
+  const symbol = CHAINS[chain].symbol;
+
+  // Create order record
+  const order = createOrder({
+    userId: ctx.from!.id,
+    username: ctx.from!.username,
+    firstName: ctx.from!.first_name,
+    promoType: ctx.session.promoType!,
+    chain,
+    contractAddress: contract,
+    packageId,
+    packageName,
+    amount,
+    walletAddress: wallet,
+    status: "awaiting_payment",
+    trendingSpot: ctx.session.trendingSpot,
+    trendingDuration: ctx.session.trendingDuration,
+  });
+
+  ctx.session.orderId = order.id;
+  ctx.session.step = "payment_hash";
+
+  const shortContract = `${contract.slice(0, 8)}...${contract.slice(-6)}`;
+
+  const text =
+    `💳 *Payment Details*\n\n` +
+    `📋 Order ID: \`${order.id}\`\n` +
+    `📦 Package: *${packageName}*\n` +
+    `⛓ Chain: *${chainName}*\n` +
+    `🪙 Token: \`${shortContract}\`\n` +
+    `💰 Amount: *${amount}*\n\n` +
+    `━━━━━━━━━━━━━━━━━━━━\n` +
+    `📤 *Send ${symbol} to:*\n` +
+    `\`${wallet}\`\n` +
+    `━━━━━━━━━━━━━━━━━━━━\n\n` +
+    `⚠️ Send *exactly* ${amount} to the address above.\n` +
+    `After sending, click the button below to submit your TX hash.`;
+
+  try {
+    await ctx.editMessageText(text, {
+      parse_mode: "Markdown",
+      ...paymentKeyboard(),
+    });
+  } catch {
+    await ctx.reply(text, {
+      parse_mode: "Markdown",
+      ...paymentKeyboard(),
+    });
+  }
+}
+
+// ─── TX Hash Input (text message) ─────────────────────────────────────────────
+async function handleTxHashInput(ctx: BotContext, hash: string) {
+  const trimmed = hash.trim();
+  const orderId = ctx.session.orderId;
+
+  if (!orderId) {
+    await ctx.reply("⚠️ No active order found. Please start a new order.", {
+      ...mainMenuKeyboard(),
+    });
+    resetSession(ctx);
+    return;
+  }
+
+  // Basic TX hash validation (hex or base58)
+  const isEvm = /^0x[0-9a-fA-F]{64}$/.test(trimmed);
+  const isSol = /^[1-9A-HJ-NP-Za-km-z]{87,88}$/.test(trimmed);
+  if (!isEvm && !isSol) {
+    await ctx.reply(
+      `⚠️ That doesn't look like a valid transaction hash.\n\nPlease paste the full TX hash from your wallet:`,
+      {
+        parse_mode: "Markdown",
+        ...Markup.inlineKeyboard([
+          [Markup.button.callback("❌ Cancel Order", "cancel_order")],
+        ]),
+      },
+    );
+    return;
+  }
+
+  const order = updateOrder(orderId, {
+    txHash: trimmed,
+    status: "payment_submitted",
+  });
+
+  if (!order) {
+    await ctx.reply("⚠️ Order not found. Please start a new order.", {
+      ...mainMenuKeyboard(),
+    });
+    resetSession(ctx);
+    return;
+  }
+
+  resetSession(ctx);
+
+  const explorerUrl = CHAINS[order.chain]?.explorer
+    ? `${CHAINS[order.chain].explorer}${trimmed}`
+    : null;
+
+  const text =
+    `✅ *TX Hash Received!*\n\n` +
+    `📋 Order: \`${order.id}\`\n` +
+    `🔍 TX: \`${trimmed.slice(0, 20)}...${trimmed.slice(-10)}\`\n\n` +
+    `Your order is now *under review*.\n` +
+    `We will verify your payment and activate your campaign within *${BOT_CONFIG.activationTime}*.\n\n` +
+    (explorerUrl ? `🔗 [View on Explorer](${explorerUrl})\n\n` : "") +
+    `📱 Support: ${BOT_CONFIG.supportUsername}`;
+
+  await ctx.reply(text, {
+    parse_mode: "Markdown",
+    disable_web_page_preview: true,
+    ...afterPaymentKeyboard(),
+  });
+
+  // Notify admin if ADMIN_CHAT_ID is set
+  const adminId = process.env.ADMIN_CHAT_ID;
+  if (adminId) {
+    try {
+      const adminText =
+        `🔔 *New Payment Submitted*\n\n` +
+        `Order: \`${order.id}\`\n` +
+        `User: ${order.firstName ?? "Unknown"} (@${order.username ?? "N/A"})\n` +
+        `Type: ${order.promoType}\n` +
+        `Chain: ${order.chain}\n` +
+        `Package: ${order.packageName}\n` +
+        `Amount: ${order.amount}\n` +
+        `Contract: \`${order.contractAddress}\`\n` +
+        `TX: \`${trimmed}\`\n\n` +
+        `Use /verify ${order.id} to activate, /cancel ${order.id} to reject.`;
+      await ctx.telegram.sendMessage(adminId, adminText, {
+        parse_mode: "Markdown",
+      });
+    } catch {
+      // Silent fail if admin notification fails
+    }
+  }
+}
+
+// ─── My Orders ────────────────────────────────────────────────────────────────
+async function handleMyOrders(ctx: BotContext) {
+  const orders = getUserOrders(ctx.from!.id);
+
+  if (orders.length === 0) {
+    const text = `📋 *My Orders*\n\nYou have no orders yet.\n\nStart a promotion to get your token trending! 🚀`;
+    try {
+      await ctx.editMessageText(text, {
+        parse_mode: "Markdown",
+        ...backToMenuKeyboard(),
+      });
+    } catch {
+      await ctx.reply(text, {
+        parse_mode: "Markdown",
+        ...backToMenuKeyboard(),
+      });
+    }
+    return;
+  }
+
+  const recent = orders.slice(0, 5);
+  let text = `📋 *My Orders* (${orders.length} total)\n\n`;
+
+  for (const order of recent) {
+    const date = order.createdAt.toLocaleDateString();
+    text +=
+      `▸ \`${order.id}\`\n` +
+      `  ${formatStatus(order.status)} — ${order.packageName}\n` +
+      `  ${order.chain} • ${order.amount} • ${date}\n\n`;
+  }
+
+  if (orders.length > 5) {
+    text += `_…and ${orders.length - 5} more_\n`;
+  }
+
+  try {
+    await ctx.editMessageText(text, {
+      parse_mode: "Markdown",
+      ...backToMenuKeyboard(),
+    });
+  } catch {
+    await ctx.reply(text, { parse_mode: "Markdown", ...backToMenuKeyboard() });
+  }
+}
+
+// ─── Help & Support ───────────────────────────────────────────────────────────
+async function handleHelp(ctx: BotContext) {
+  const text =
+    `ℹ️ *Help & Support*\n\n` +
+    `*How it works:*\n` +
+    `1. Choose a promotion type\n` +
+    `2. Select your blockchain\n` +
+    `3. Enter your token's contract address\n` +
+    `4. Pick a package or slot\n` +
+    `5. Send the exact payment amount\n` +
+    `6. Submit your TX hash\n` +
+    `7. Campaign activates within *${BOT_CONFIG.activationTime}*\n\n` +
+    `*Supported Wallets:*\n` +
+    `• ETH/BNB/BASE: \`0xcd0d...7C22\`\n` +
+    `• SOL/PUMP: \`E9WvJ...ZVES\`\n\n` +
+    `*Support:* ${BOT_CONFIG.supportUsername}\n` +
+    `*Channel:* ${BOT_CONFIG.channelUsername}\n\n` +
+    `*Common questions:*\n` +
+    `❓ *How long until my campaign starts?*\n` +
+    `→ Within ${BOT_CONFIG.activationTime} after payment confirmation.\n\n` +
+    `❓ *What if I sent the wrong amount?*\n` +
+    `→ Contact support immediately with your order ID.`;
+
+  try {
+    await ctx.editMessageText(text, {
+      parse_mode: "Markdown",
+      ...backToMenuKeyboard(),
+    });
+  } catch {
+    await ctx.reply(text, { parse_mode: "Markdown", ...backToMenuKeyboard() });
+  }
+}
+
+// ─── Admin Commands ───────────────────────────────────────────────────────────
+async function handleAdminVerify(ctx: BotContext, orderId: string) {
+  const adminId = process.env.ADMIN_CHAT_ID;
+  if (!adminId || String(ctx.from?.id) !== adminId) {
+    await ctx.reply("⛔ Unauthorized");
+    return;
+  }
+
+  const order = getOrder(orderId);
+  if (!order) {
+    await ctx.reply(`❌ Order \`${orderId}\` not found.`, {
+      parse_mode: "Markdown",
+    });
+    return;
+  }
+
+  updateOrder(orderId, { status: "active" });
+
+  await ctx.reply(`✅ Order \`${orderId}\` verified and set to *active*!`, {
+    parse_mode: "Markdown",
+  });
+
+  // Notify user
+  try {
+    await ctx.telegram.sendMessage(
+      order.userId,
+      `🚀 *Campaign Activated!*\n\nYour order \`${order.id}\` is now *active*!\n\n` +
+        `Package: ${order.packageName}\n` +
+        `Check it out: ${BOT_CONFIG.channelUsername}`,
+      { parse_mode: "Markdown" },
+    );
+  } catch {
+    // user may have blocked the bot
+  }
+}
+
+async function handleAdminCancel(ctx: BotContext, orderId: string) {
+  const adminId = process.env.ADMIN_CHAT_ID;
+  if (!adminId || String(ctx.from?.id) !== adminId) {
+    await ctx.reply("⛔ Unauthorized");
+    return;
+  }
+
+  const order = getOrder(orderId);
+  if (!order) {
+    await ctx.reply(`❌ Order \`${orderId}\` not found.`, {
+      parse_mode: "Markdown",
+    });
+    return;
+  }
+
+  updateOrder(orderId, { status: "cancelled" });
+  await ctx.reply(`❌ Order \`${orderId}\` cancelled.`, {
+    parse_mode: "Markdown",
+  });
+}
+
+async function handleAdminOrders(ctx: BotContext) {
+  const adminId = process.env.ADMIN_CHAT_ID;
+  if (!adminId || String(ctx.from?.id) !== adminId) {
+    await ctx.reply("⛔ Unauthorized");
+    return;
+  }
+
+  const orders = getAllOrders().slice(0, 20);
+  if (orders.length === 0) {
+    await ctx.reply("No orders yet.");
+    return;
+  }
+
+  let text = `📊 *All Orders (${orders.length})*\n\n`;
+  for (const o of orders) {
+    text +=
+      `\`${o.id}\` — ${formatStatus(o.status)}\n` +
+      `${o.promoType} • ${o.chain} • ${o.amount}\n` +
+      `@${o.username ?? "N/A"} • ${o.createdAt.toLocaleDateString()}\n\n`;
+  }
+
+  await ctx.reply(text, { parse_mode: "Markdown" });
+}
+
+// ─── Register All Handlers ────────────────────────────────────────────────────
+export function registerHandlers(bot: Telegraf<BotContext>) {
+  // ── Commands ──────────────────────────────────────────────────────────────
+  bot.command("start", sendWelcome);
+  bot.command("menu", async (ctx) => {
+    resetSession(ctx);
+    await ctx.reply("Choose a service:", mainMenuKeyboard());
+  });
+  bot.command("orders", async (ctx) => {
+    resetSession(ctx);
+    await handleMyOrders(ctx as BotContext);
+  });
+  bot.command("help", async (ctx) => {
+    await handleHelp(ctx as BotContext);
+  });
+  bot.command("cancel", async (ctx) => {
+    const parts = ctx.message?.text?.split(" ");
+    const orderId = parts?.[1];
+    if (orderId) {
+      await handleAdminCancel(ctx as BotContext, orderId);
+    } else {
+      resetSession(ctx);
+      await ctx.reply("❌ Flow cancelled.", mainMenuKeyboard());
+    }
+  });
+  bot.command("verify", async (ctx) => {
+    const parts = ctx.message?.text?.split(" ");
+    const orderId = parts?.[1];
+    if (!orderId) {
+      await ctx.reply("Usage: /verify ORDER_ID");
+      return;
+    }
+    await handleAdminVerify(ctx as BotContext, orderId);
+  });
+  bot.command("allorders", async (ctx) => {
+    await handleAdminOrders(ctx as BotContext);
+  });
+
+  // ── Main Menu Actions ──────────────────────────────────────────────────────
+  bot.action("menu", async (ctx) => {
+    await ctx.answerCbQuery();
+    resetSession(ctx);
+    await safeEdit(ctx, "Choose a service:", mainMenuKeyboard());
+  });
+
+  bot.action("promo_trending", async (ctx) => {
+    await ctx.answerCbQuery();
+    await startPromoFlow(ctx, "trending");
+  });
+  bot.action("promo_ads", async (ctx) => {
+    await ctx.answerCbQuery();
+    await startPromoFlow(ctx, "ads");
+  });
+  bot.action("promo_community", async (ctx) => {
+    await ctx.answerCbQuery();
+    await startPromoFlow(ctx, "community");
+  });
+  bot.action("promo_marketing", async (ctx) => {
+    await ctx.answerCbQuery();
+    await startPromoFlow(ctx, "marketing");
+  });
+
+  // ── Chain Selection ────────────────────────────────────────────────────────
+  for (const chain of Object.keys(CHAINS)) {
+    bot.action(`chain_${chain}`, async (ctx) => {
+      await ctx.answerCbQuery();
+      await handleChainSelected(ctx, chain);
+    });
+  }
+
+  // ── Trending Spots ─────────────────────────────────────────────────────────
+  for (const spot of [1, 2, 3]) {
+    bot.action(`spot_${spot}`, async (ctx) => {
+      await ctx.answerCbQuery();
+      await handleSpotSelected(ctx, spot);
+    });
+  }
+
+  // ── Trending Durations ─────────────────────────────────────────────────────
+  for (const hours of [1, 3, 6, 12, 24]) {
+    bot.action(`dur_${hours}`, async (ctx) => {
+      await ctx.answerCbQuery();
+      const chain = ctx.session.chain!;
+      const spot = ctx.session.trendingSpot!;
+      ctx.session.trendingDuration = hours;
+      ctx.session.packageId = `trending_spot${spot}_${hours}h`;
+      const label = TRENDING_SPOTS[spot];
+      const duration = hours === 1 ? "1 Hour" : `${hours} Hours`;
+      const amount = getTrendingPrice(chain, hours, spot);
+      const packageName = `${label} — ${duration}`;
+      await showPayment(ctx, ctx.session.packageId, packageName, amount);
+    });
+  }
+
+  // ── Ads Packages ───────────────────────────────────────────────────────────
+  for (const [key, pkg] of Object.entries(ADS_PACKAGES)) {
+    bot.action(`ads_${key}`, async (ctx) => {
+      await ctx.answerCbQuery();
+      ctx.session.packageId = key;
+      const chain = ctx.session.chain!;
+      const symbol = CHAINS[chain]?.symbol ?? chain;
+      const price = pkg.prices[chain] ?? 0;
+      const amount = `${price} ${symbol}`;
+
+      // Show package details first
+      const features = pkg.features.map((f) => `  ✓ ${f}`).join("\n");
+      const detailText = `${pkg.name}\n\n${pkg.description}\n\n*Includes:*\n${features}\n\n*Price: ${amount}*`;
+      await safeEdit(ctx, detailText, {
+        parse_mode: "Markdown",
+        ...paymentKeyboard(),
+      });
+      await showPayment(ctx, key, pkg.name, amount);
+    });
+  }
+
+  // ── Community Packages ─────────────────────────────────────────────────────
+  for (const [key, pkg] of Object.entries(COMMUNITY_PACKAGES)) {
+    bot.action(`comm_${key}`, async (ctx) => {
+      await ctx.answerCbQuery();
+      ctx.session.packageId = key;
+      const chain = ctx.session.chain!;
+      const symbol = CHAINS[chain]?.symbol ?? chain;
+      const price = pkg.prices[chain] ?? 0;
+      await showPayment(ctx, key, pkg.name, `${price} ${symbol}`);
+    });
+  }
+
+  // ── Marketing Bundles ──────────────────────────────────────────────────────
+  for (const [key, bundle] of Object.entries(MARKETING_BUNDLES)) {
+    bot.action(`mkt_${key}`, async (ctx) => {
+      await ctx.answerCbQuery();
+      ctx.session.packageId = key;
+      const chain = ctx.session.chain!;
+      const symbol = CHAINS[chain]?.symbol ?? chain;
+      const price = bundle.prices[chain] ?? 0;
+      const amount = `${price} ${symbol}`;
+
+      // Show bundle details
+      const features = bundle.features.map((f) => `  ✓ ${f}`).join("\n");
+      const detailText = `${bundle.name}\n_${bundle.tagline}_\n\n*Includes:*\n${features}\n\n*Price: ${amount}*`;
+      try {
+        await ctx.editMessageText(detailText, {
+          parse_mode: "Markdown",
+          ...paymentKeyboard(),
+        });
+      } catch {
+        // ignore if same text
+      }
+      await showPayment(ctx, key, bundle.name, amount);
+    });
+  }
+
+  // ── Payment Actions ────────────────────────────────────────────────────────
+  bot.action("submit_hash", async (ctx) => {
+    await ctx.answerCbQuery();
+    if (ctx.session.step !== "payment_hash") {
+      await ctx.reply(
+        "No active payment. Please start a new order.",
+        mainMenuKeyboard(),
+      );
+      return;
+    }
+    await safeEdit(
+      ctx,
+      `📋 Please paste your *transaction hash* below:\n\n_(The TX hash from your wallet after sending payment)_`,
+      {
+        parse_mode: "Markdown",
+        ...Markup.inlineKeyboard([
+          [Markup.button.callback("❌ Cancel", "cancel_order")],
+        ]),
+      },
+    );
+  });
+
+  bot.action("cancel_order", async (ctx) => {
+    await ctx.answerCbQuery();
+    const orderId = ctx.session.orderId;
+    if (orderId) {
+      updateOrder(orderId, { status: "cancelled" });
+    }
+    resetSession(ctx);
+    await safeEdit(
+      ctx,
+      "❌ Order cancelled.\n\nFeel free to start a new promotion:",
+      mainMenuKeyboard(),
+    );
+  });
+
+  // ── Info Actions ───────────────────────────────────────────────────────────
+  bot.action("my_orders", async (ctx) => {
+    await ctx.answerCbQuery();
+    await handleMyOrders(ctx);
+  });
+
+  bot.action("help", async (ctx) => {
+    await ctx.answerCbQuery();
+    await handleHelp(ctx);
+  });
+
+  // ── Text Message Router ────────────────────────────────────────────────────
+  bot.on("text", async (ctx) => {
+    const text = ctx.message.text;
+
+    // Ignore commands
+    if (text.startsWith("/")) return;
+
+    const step = ctx.session.step;
+
+    if (
+      step === "trending_contract" ||
+      step === "ads_contract" ||
+      step === "community_contract" ||
+      step === "marketing_contract"
+    ) {
+      await handleContractInput(ctx, text);
+    } else if (step === "payment_hash") {
+      await handleTxHashInput(ctx, text);
+    } else {
+      // Default: show menu
+      await ctx.reply(
+        "👋 Use the menu below to get started:",
+        mainMenuKeyboard(),
+      );
+    }
+  });
+
+  // ── Error Handler ─────────────────────────────────────────────────────────
+  bot.catch((err, ctx) => {
+    logger.error({ err, updateType: ctx.updateType }, "Bot error");
+  });
+}

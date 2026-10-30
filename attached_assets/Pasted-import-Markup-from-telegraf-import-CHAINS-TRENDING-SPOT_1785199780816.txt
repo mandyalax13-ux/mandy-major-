@@ -1,0 +1,153 @@
+import { Markup } from "telegraf";
+import {
+  CHAINS,
+  TRENDING_SPOTS,
+  TRENDING_DURATIONS,
+  TRENDING_BASE_PRICES,
+  TRENDING_SPOT_MULTIPLIERS,
+  ADS_PACKAGES,
+  COMMUNITY_PACKAGES,
+  MARKETING_BUNDLES,
+} from "./config.js";
+
+// ─── Main Menu ────────────────────────────────────────────────────────────────
+export const mainMenuKeyboard = () =>
+  Markup.inlineKeyboard([
+    [
+      Markup.button.callback("🚀 Trending", "promo_trending"),
+      Markup.button.callback("📢 Advertise", "promo_ads"),
+    ],
+    [
+      Markup.button.callback("🏆 Community Trending", "promo_community"),
+      Markup.button.callback("📦 Marketing Bundles", "promo_marketing"),
+    ],
+    [
+      Markup.button.callback("📋 My Orders", "my_orders"),
+      Markup.button.callback("ℹ️ Help & Support", "help"),
+    ],
+  ]);
+
+// ─── Chain Selection ──────────────────────────────────────────────────────────
+export const chainKeyboard = () =>
+  Markup.inlineKeyboard([
+    [
+      Markup.button.callback("⟠ Ethereum (ETH)", "chain_ETH"),
+      Markup.button.callback("⬡ BNB Chain", "chain_BNB"),
+    ],
+    [
+      Markup.button.callback("🔵 Base", "chain_BASE"),
+      Markup.button.callback("◎ Solana (SOL)", "chain_SOL"),
+    ],
+    [
+      Markup.button.callback("🟣 Pump.fun", "chain_PUMP"),
+    ],
+    [Markup.button.callback("« Back to Menu", "menu")],
+  ]);
+
+// ─── Trending: Spot Selection ─────────────────────────────────────────────────
+export const trendingSpotKeyboard = (chain: string) => {
+  const rows = Object.entries(TRENDING_SPOTS).map(([spot, label]) => {
+    const spotNum = Number(spot);
+    const basePrices = TRENDING_BASE_PRICES[chain] ?? {};
+    const mult = TRENDING_SPOT_MULTIPLIERS[spotNum] ?? 1;
+    const minPrice = +(Math.min(...Object.values(basePrices)) * mult).toFixed(3);
+    const sym = CHAINS[chain]?.symbol ?? chain;
+    return [
+      Markup.button.callback(
+        `${label}  (from ${minPrice} ${sym}/hr)`,
+        `spot_${spot}`,
+      ),
+    ];
+  });
+  rows.push([Markup.button.callback("« Cancel", "menu")]);
+  return Markup.inlineKeyboard(rows);
+};
+
+// ─── Trending: Duration Selection ─────────────────────────────────────────────
+export const trendingDurationKeyboard = (chain: string, spot: number) => {
+  const sym = CHAINS[chain]?.symbol ?? chain;
+  const rows: ReturnType<typeof Markup.button.callback>[][] = [];
+
+  const durations = TRENDING_DURATIONS;
+  // 2 per row
+  for (let i = 0; i < durations.length; i += 2) {
+    const row = durations.slice(i, i + 2).map((h) => {
+      const base = TRENDING_BASE_PRICES[chain]?.[h] ?? 0;
+      const mult = TRENDING_SPOT_MULTIPLIERS[spot] ?? 1;
+      const price = +(base * mult).toFixed(3);
+      const label = h === 1 ? "1 Hour" : `${h} Hours`;
+      return Markup.button.callback(`${label} — ${price} ${sym}`, `dur_${h}`);
+    });
+    rows.push(row);
+  }
+  rows.push([Markup.button.callback("« Cancel", "menu")]);
+  return Markup.inlineKeyboard(rows);
+};
+
+// ─── Ads Package Selection ────────────────────────────────────────────────────
+export const adsPackageKeyboard = (chain: string) => {
+  const sym = CHAINS[chain]?.symbol ?? chain;
+  const rows = Object.entries(ADS_PACKAGES).map(([key, pkg]) => {
+    const price = pkg.prices[chain] ?? 0;
+    return [
+      Markup.button.callback(
+        `${pkg.name}  —  ${price} ${sym}`,
+        `ads_${key}`,
+      ),
+    ];
+  });
+  rows.push([Markup.button.callback("« Cancel", "menu")]);
+  return Markup.inlineKeyboard(rows);
+};
+
+// ─── Community Package Selection ──────────────────────────────────────────────
+export const communityPackageKeyboard = (chain: string) => {
+  const sym = CHAINS[chain]?.symbol ?? chain;
+  const rows = Object.entries(COMMUNITY_PACKAGES).map(([key, pkg]) => {
+    const price = pkg.prices[chain] ?? 0;
+    return [
+      Markup.button.callback(
+        `${pkg.name}  —  ${price} ${sym}`,
+        `comm_${key}`,
+      ),
+    ];
+  });
+  rows.push([Markup.button.callback("« Cancel", "menu")]);
+  return Markup.inlineKeyboard(rows);
+};
+
+// ─── Marketing Bundle Selection ───────────────────────────────────────────────
+export const marketingBundleKeyboard = (chain: string) => {
+  const sym = CHAINS[chain]?.symbol ?? chain;
+  const rows = Object.entries(MARKETING_BUNDLES).map(([key, bundle]) => {
+    const price = bundle.prices[chain] ?? 0;
+    return [
+      Markup.button.callback(
+        `${bundle.name}  —  ${price} ${sym}`,
+        `mkt_${key}`,
+      ),
+    ];
+  });
+  rows.push([Markup.button.callback("« Cancel", "menu")]);
+  return Markup.inlineKeyboard(rows);
+};
+
+// ─── Payment Keyboard ─────────────────────────────────────────────────────────
+export const paymentKeyboard = () =>
+  Markup.inlineKeyboard([
+    [Markup.button.callback("✅ I've Sent — Submit TX Hash", "submit_hash")],
+    [Markup.button.callback("❌ Cancel Order", "cancel_order")],
+  ]);
+
+// ─── Post-Payment ─────────────────────────────────────────────────────────────
+export const afterPaymentKeyboard = () =>
+  Markup.inlineKeyboard([
+    [Markup.button.callback("📋 View My Orders", "my_orders")],
+    [Markup.button.callback("🏠 Back to Menu", "menu")],
+  ]);
+
+// ─── Cancel / Back ────────────────────────────────────────────────────────────
+export const backToMenuKeyboard = () =>
+  Markup.inlineKeyboard([
+    [Markup.button.callback("🏠 Back to Menu", "menu")],
+  ]);
